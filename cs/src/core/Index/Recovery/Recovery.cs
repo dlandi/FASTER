@@ -51,10 +51,7 @@ namespace FASTER.core
     }
 
 
-    /// <summary>
-    /// Partial class for recovery code in FASTER
-    /// </summary>
-    public unsafe partial class FasterKV<Key, Value, Input, Output, Context, Functions> : FasterBase, IFasterKV<Key, Value, Input, Output, Context>
+    public unsafe partial class FasterKV<Key, Value, Input, Output, Context, Functions> : FasterBase, IFasterKV<Key, Value, Input, Output, Context, Functions>
         where Key : new()
         where Value : new()
         where Functions : IFunctions<Key, Value, Input, Output, Context>
@@ -225,7 +222,7 @@ namespace FASTER.core
             var recoveryDevice = checkpointManager.GetSnapshotLogDevice(recoveryInfo.guid);
             var objectLogRecoveryDevice = checkpointManager.GetSnapshotObjectLogDevice(recoveryInfo.guid);
             recoveryDevice.Initialize(hlog.GetSegmentSize());
-            objectLogRecoveryDevice.Initialize(hlog.GetSegmentSize());
+            objectLogRecoveryDevice.Initialize(-1);
             var recoveryStatus = new RecoveryStatus(capacity, startPage, endPage, untilAddress)
             {
                 recoveryDevice = recoveryDevice,
@@ -348,7 +345,7 @@ namespace FASTER.core
                     hash = comparer.GetHashCode64(ref hlog.GetKey(recordStart));
                     tag = (ushort)((ulong)hash >> Constants.kHashTagShift);
 
-                    entry = default(HashBucketEntry);
+                    entry = default;
                     FindOrCreateTag(hash, tag, ref bucket, ref slot, ref entry, hlog.BeginAddress);
 
                     if (info.Version <= version)

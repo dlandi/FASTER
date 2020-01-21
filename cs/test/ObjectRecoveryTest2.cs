@@ -12,7 +12,7 @@ namespace FASTER.test.recovery.objects
     [TestFixture]
     public class ObjectRecoveryTest
     {
-        static readonly int iterations = 21;
+        int iterations;
         string FasterFolderPath { get; set; }
 
         [SetUp]
@@ -52,31 +52,30 @@ namespace FASTER.test.recovery.objects
 
 
         [Test]
-        public void ObjectRecoveryTest1([Values]CheckpointType checkpointType)
+        public void ObjectRecoveryTest1(
+            [Values]CheckpointType checkpointType,
+            [Range(100, 1500, 600)] int iterations)
         {
+            this.iterations = iterations;
+            Prepare(checkpointType, out _, out _, out IDevice log, out IDevice objlog, out FasterKV<MyKey, MyValue, MyInput, MyOutput, MyContext, MyFunctions> h, out MyContext context);
 
-            Prepare(checkpointType, out string logPath, out string objPath, out IDevice log, out IDevice objlog, out FasterKV<MyKey, MyValue, MyInput, MyOutput, MyContext, MyFunctions> h, out MyContext context);
+            var session1 = h.NewSession();
+            Write(session1, context, h);
+            Read(session1, context, false);
+            session1.Dispose();
 
-            h.StartSession();
-
-            Write(h, context);
-
-            h.Refresh();
-
-            Read(h, context, false);
-
-            h.TakeFullCheckpoint(out Guid CheckPointID);
-            h.CompleteCheckpoint(true);
+            h.TakeFullCheckpoint(out _);
+            h.CompleteCheckpointAsync().GetAwaiter().GetResult();
 
             Destroy(log, objlog, h);
 
-            Prepare(checkpointType, out logPath, out objPath, out log, out objlog, out h, out context);
+            Prepare(checkpointType, out _, out _, out log, out objlog, out h, out context);
 
             h.Recover();
 
-            h.StartSession();
-
-            Read(h, context, true);
+            var session2 = h.NewSession();
+            Read(session2, context, true);
+            session2.Dispose();
 
             Destroy(log, objlog, h);
         }
@@ -94,8 +93,8 @@ namespace FASTER.test.recovery.objects
                 {
                     LogDevice = log,
                     ObjectLogDevice = objlog,
-                    SegmentSizeBits = 10,
-                    MemorySizeBits = 10,
+                    SegmentSizeBits = 12,
+                    MemorySizeBits = 12,
                     PageSizeBits = 9
                 },
                 new CheckpointSettings()
@@ -107,63 +106,61 @@ namespace FASTER.test.recovery.objects
              );
             context = new MyContext();
         }
+
         private static void Destroy(IDevice log, IDevice objlog, FasterKV<MyKey, MyValue, MyInput, MyOutput, MyContext, MyFunctions> h)
         {
-            // Each thread ends session when done
-            h.StopSession();
-
             // Dispose FASTER instance and log
             h.Dispose();
             log.Close();
             objlog.Close();
         }
 
-        private void Write(FasterKV<MyKey, MyValue, MyInput, MyOutput, MyContext, MyFunctions> h, MyContext context)
+        private void Write(ClientSession<MyKey, MyValue, MyInput, MyOutput, MyContext, MyFunctions> session, MyContext context, FasterKV<MyKey, MyValue, MyInput, MyOutput, MyContext, MyFunctions> fht)
         {
             for (int i = 0; i < iterations; i++)
             {
                 var _key = new MyKey { key = i, name = i.ToString() };
                 var value = new MyValue { value = i.ToString() };
-                h.Upsert(ref _key, ref value, context, 0);
+                session.Upsert(ref _key, ref value, context, 0);
+
+                if (i % 100 == 0)
+                {
+                    fht.TakeFullCheckpoint(out _);
+                    fht.CompleteCheckpointAsync().GetAwaiter().GetResult();
+                }
             }
         }
 
-        private void Read(FasterKV<MyKey, MyValue, MyInput, MyOutput, MyContext, MyFunctions> h, MyContext context, bool delete)
+        private void Read(ClientSession<MyKey, MyValue, MyInput, MyOutput, MyContext, MyFunctions> session, MyContext context, bool delete)
         {
-            var key = new MyKey { key = 1, name = "1" };
-            var input = default(MyInput);
-            MyOutput g1 = new MyOutput();
-            var status = h.Read(ref key, ref input, ref g1, context, 0);
-
-            if (status == Status.PENDING)
+            for (int i = 0; i < iterations; i++)
             {
-                h.CompletePending(true);
-                context.FinalizeRead(ref status, ref g1);
-            }
-
-            Assert.IsTrue(status == Status.OK);
-
-            MyOutput g2 = new MyOutput();
-            key = new MyKey { key = 2, name = "2" };
-            status = h.Read(ref key, ref input, ref g2, context, 0);
-
-            if (status == Status.PENDING)
-            {
-                h.CompletePending(true);
-                context.FinalizeRead(ref status, ref g2);
-            }
-
-            Assert.IsTrue(status == Status.OK);
-
-            if (delete)
-            {
-                var output = new MyOutput();
-                h.Delete(ref key, context, 0);
-                status = h.Read(ref key, ref input, ref output, context, 0);
+                var key = new MyKey { key = i, name = i.ToString() };
+                var input = default(MyInput);
+                MyOutput g1 = new MyOutput();
+                var status = session.Read(ref key, ref input, ref g1, context, 0);
 
                 if (status == Status.PENDING)
                 {
-                    h.CompletePending(true);
+                    session.CompletePending(true);
+                    context.FinalizeRead(ref status, ref g1);
+                }
+
+                Assert.IsTrue(status == Status.OK);
+                Assert.IsTrue(g1.value.value == i.ToString());
+            }
+
+            if (delete)
+            {
+                var key = new MyKey { key = 1, name = "1" };
+                var input = default(MyInput);
+                var output = new MyOutput();
+                session.Delete(ref key, context, 0);
+                var status = session.Read(ref key, ref input, ref output, context, 0);
+
+                if (status == Status.PENDING)
+                {
+                    session.CompletePending(true);
                     context.FinalizeRead(ref status, ref output);
                 }
 
@@ -275,6 +272,6 @@ namespace FASTER.test.recovery.objects
         public void UpsertCompletionCallback(ref MyKey key, ref MyValue value, MyContext ctx) { }
         public void RMWCompletionCallback(ref MyKey key, ref MyInput input, MyContext ctx, Status status) { }
         public void DeleteCompletionCallback(ref MyKey key, MyContext ctx) { }
-        public void CheckpointCompletionCallback(Guid sessionId, long serialNum) { }
+        public void CheckpointCompletionCallback(string sessionId, CommitPoint commitPoint) { }
     }
 }

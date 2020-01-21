@@ -25,7 +25,6 @@ namespace FASTER.core
         private readonly GetMemory getMemory;
         private readonly int headerSize;
         private readonly LogChecksumType logChecksum;
-        private readonly Dictionary<string, long> RecoveredIterators;
         private TaskCompletionSource<LinkedCommitInfo> commitTcs
             = new TaskCompletionSource<LinkedCommitInfo>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -43,6 +42,11 @@ namespace FASTER.core
         /// Log flushed until address
         /// </summary>
         public long FlushedUntilAddress => allocator.FlushedUntilAddress;
+
+        /// <summary>
+        /// Dictionary of recovered iterators and their committed until addresses
+        /// </summary>
+        public readonly Dictionary<string, long> RecoveredIterators;
 
         /// <summary>
         /// Log committed until address
@@ -934,7 +938,7 @@ namespace FASTER.core
         private long CommitInternal(bool spinWait = false)
         {
             epoch.Resume();
-            if (allocator.ShiftReadOnlyToTail(out long tailAddress))
+            if (allocator.ShiftReadOnlyToTail(out long tailAddress, out _))
             {
                 if (spinWait)
                 {
